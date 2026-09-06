@@ -14,7 +14,7 @@ I'm currently studying cybersecurity, and I wanted to complement that with a sol
 - **Message framing over a raw byte stream** — TCP delivers bytes reliably and in order, but makes *no guarantee* that a single `send()` call corresponds to a single `recv()` call on the other end. This program frames messages using a `\n` delimiter and accumulates bytes across as many `recv()` calls as it takes to see one, correctly handling messages that arrive split across multiple reads or multiple messages arriving in a single read.
 - **Partial-send-safe writes** — `send()` is not guaranteed to transmit an entire buffer in one call. The client loops on `send()`, tracking exactly how many bytes have gone out, until the full message is confirmed sent.
 - **Overflow-guarded message accumulation** — the server enforces a hard cap on how many bytes it will buffer while waiting for a message delimiter, so a malformed or hostile client (e.g. connecting directly with `netcat` and sending an unbounded stream with no `\n`) can't overrun the accumulation buffer.
-- **Graceful shutdown command** — either side can end the session cleanly by sending `!q`, which closes the socket(s) properly instead of relying on the OS to clean up after a crash or forced exit.
+- **Graceful shutdown command** — Client side can end the session cleanly by sending `!q`, which closes the socket(s) properly instead of relying on the OS to clean up after a crash or forced exit.
 - **Explicit error handling throughout** — every syscall that can fail (`getaddrinfo`, `socket`, `bind`, `listen`, `accept`, `connect`, `send`) is checked, with `errno`/`gai_strerror` reported to `stderr` and a clean exit on failure.
 
 ## How it works
@@ -52,7 +52,7 @@ gcc -Wall -Wextra -o chat_socket chat_socket.c
 ./chat_socket 2 <server_ip>
 ```
 
-Type a message and press Enter to send it. Type `!q` on either side to close the connection cleanly.
+Type a message and press Enter to send it. Type `!q` on client side to close the connection cleanly.
 
 ## What I'd add next
 
