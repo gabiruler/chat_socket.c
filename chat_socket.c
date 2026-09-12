@@ -1,20 +1,3 @@
-/*
- * chat_socket.c
- *
- * A minimal TCP client/server chat program built on the BSD sockets API.
- *
- * Usage:
- *   ./chat_socket 1                 -> run as server (listens on MYPORT)
- *   ./chat_socket 2 <server_ip>     -> run as client (connects to server_ip:MYPORT)
- *
- * Protocol:
- *   - Messages are newline-delimited: each line typed by the client is sent
- *     as-is (including the trailing '\n'), and the server frames incoming
- *     bytes on '\n' to reconstruct complete messages, since TCP is a byte
- *     stream and gives no guarantee that one send() lines up with one recv().
- *   - Client side can end the session by sending the literal message "!q".
- */
-
 #define _POSIX_C_SOURCE 200112L
 
 #include <stdio.h>
@@ -43,8 +26,9 @@ int main(int argc, char *argv[])
     struct addrinfo *serverinfo;       /* Linked list of results from getaddrinfo() */
     struct sockaddr_storage their_addr;/* Connecting peer's address (server side) */
     socklen_t addr_size;
-    int status, sockfd;
+    int sockfd;
     int new_sockfd;
+    int max_con = 20;
     int bytesrecieved;
     char buf[BUF_SIZE];                /* Raw buffer for a single recv()/fgets() call */
     char buf2[BUF_SIZE];               /* Accumulator for one complete message (server side) */
@@ -63,95 +47,83 @@ int main(int argc, char *argv[])
         hints.ai_socktype = SOCK_STREAM;
         hints.ai_protocol = 0;
 
-        if ((status = getaddrinfo(NULL, MYPORT, &hints, &serverinfo)) != 0)
-        {
-            fprintf(stderr, "Erro no getaddrinfo() : %s\n", gai_strerror(status));
-            exit(EXIT_FAILURE);
-        }
+        Getaddrinfo(argv[2], MYPORT, &hints, &serverinfo);
 
-        if ((sockfd = socket(serverinfo->ai_family, serverinfo->ai_socktype, serverinfo->ai_protocol)) == -1)
-        {
-            fprintf(stderr, "Erro a criar socket: %s\n", strerror(errno));
-            exit(EXIT_FAILURE);
-        }
-
-        if ((bind(sockfd, serverinfo->ai_addr, serverinfo->ai_addrlen)) == -1)
-        {
-            fprintf(stderr, "Erro a dar bind: %s\n", strerror(errno));
-            exit(EXIT_FAILURE);
-        }
-
-        if ((listen(sockfd, 5)) == -1)
-        {
-            fprintf(stderr, "Erro a dar listen: %s\n", strerror(errno));
-            exit(EXIT_FAILURE);
-        }
-
-        printf("Server: Waiting for connections...\n");
-
-        addr_size = sizeof(their_addr);
-        if ((new_sockfd = accept(sockfd, (struct sockaddr *)&their_addr, &addr_size)) == -1)
-        {
-            fprintf(stderr, "Erro a dar accept: %s\n", strerror(errno));
-            exit(EXIT_FAILURE);
-        }
+        sockfd = Socket(serverinfo->ai_family, serverinfo->ai_socktype, serverinfo->ai_protocol);
+       
+        Bind(sockfd, serverinfo->ai_addr, serverinfo->ai_addrlen);
 
         /* Address info is no longer needed once we're bound/listening/accepted */
         freeaddrinfo(serverinfo);
 
-        size_t n = 0;                     /* Number of bytes currently held in buf2 */
-        memset(&buf2, 0, sizeof(buf2));
+        Listen(sockfd, max_con);
 
-        while (1)
+        /* Server is Listening for connections!*/
+        printf("Server: Listening for connections...\n");
+
+        while(1)
         {
-            bytesrecieved = recv(new_sockfd, buf, sizeof(buf), 0);
+            addr_size = sizeof(their_addr);
+            new_sockfd = Accept(sockfd, (struct sockaddr *)&their_addr, &addr_size);
 
-            /* Walk each byte just received and reassemble it into buf2 until
-             * a '\n' marks a complete message (TCP has no message boundaries
-             * of its own, so this framing is done at the application level). */
-            for (int i = 0; i < bytesrecieved; i++)
+            if (fork() == 0)
             {
-                /* Guard against a message (or malicious input) with no '\n'
-                 * that would otherwise overflow buf2 */
-                if (n >= BUF_SIZE - 1)
-                {
-                    printf("Message too large or someone being naughty\n");
-                    close(new_sockfd);
-                    close(sockfd);
-                    return 1;
-                }
+                close(sockfd);
+                size_t n = 0;                     /* Number of bytes currently held in buf2 */
+                memset(&buf2, 0, sizeof(buf2));
 
-                if (buf[i] == '\n')
+                while (1)
                 {
-                    /* Check for the quit command before printing/echoing it */
-                    if ((strcmp(buf2, "!q")) == 0)
+                    bytesrecieved = recv(new_sockfd, buf, sizeof(buf), 0);
+
+                    /* Walk each byte just received and reassemble it into buf2 until
+                    * a '\n' marks a complete message (TCP has no message boundaries
+                    * of its own, so this framing is done at the application level). */
+                    for (int i = 0; i < bytesrecieved; i++)
+                    {
+                        /* Guard against a message (or malicious input) with no '\n'
+                        * that would otherwise overflow buf2 */
+                        if (n >= BUF_SIZE - 1)
+                        {
+                            printf("Message too large or someone being naughty\n");
+                            close(new_sockfd);
+                            close(sockfd);
+                            return 1;
+                        }
+
+                        if (buf[i] == '\n')
+                        {
+                            /* Check for the quit command */
+                            if ((strcmp(buf2, "!q")) == 0)
+                            {
+                                close(new_sockfd);
+                                return 0;
+                            }
+
+                            printf("Client message: %s\n", buf2);
+
+                            /* Clear only the bytes that were written, then reset */
+                            memset(&buf2, 0, n);
+                            n = 0;
+                        }
+                        else
+                        {
+                            buf2[n] = buf[i];
+                            n++;
+                        }
+                    }
+
+                    /* recv() returns 0 when the peer closed the connection (FIN),
+                    * or a negative value on error */
+                    if (bytesrecieved <= 0)
                     {
                         close(new_sockfd);
                         close(sockfd);
-                        return 0;
+                        return 0; 
                     }
-
-                    printf("Client message: %s\n", buf2);
-
-                    /* Clear only the bytes that were written, then reset */
-                    memset(&buf2, 0, n);
-                    n = 0;
-                }
-                else
-                {
-                    buf2[n] = buf[i];
-                    n++;
                 }
             }
-
-            /* recv() returns 0 when the peer closed the connection (FIN),
-             * or a negative value on error */
-            if (bytesrecieved <= 0)
-            {
-                close(new_sockfd);
-                close(sockfd);
-                break;
-            }
+            close(new_sockfd);        
         }
     }
 
@@ -174,25 +146,15 @@ int main(int argc, char *argv[])
         hints.ai_socktype = SOCK_STREAM;
         hints.ai_protocol = 0;
 
-        if ((status = getaddrinfo(argv[2], MYPORT, &hints, &serverinfo)) != 0)
-        {
-            fprintf(stderr, "Erro no getaddrinfo() : %s\n", gai_strerror(status));
-            exit(EXIT_FAILURE);
-        }
+        Getaddrinfo(argv[2], MYPORT, &hints, &serverinfo);
+        
 
-        if ((sockfd = socket(serverinfo->ai_family, serverinfo->ai_socktype, serverinfo->ai_protocol)) == -1)
-        {
-            fprintf(stderr, "Erro a criar socket: %s\n", strerror(errno));
-            exit(EXIT_FAILURE);
-        }
-
+        sockfd = Socket(serverinfo->ai_family, serverinfo->ai_socktype, serverinfo->ai_protocol);
+       
         /* No bind() here: connect() lets the kernel pick our local address/port,
          * which is what we want as a client */
-        if ((connect(sockfd, serverinfo->ai_addr, serverinfo->ai_addrlen)) == -1)
-        {
-            fprintf(stderr, "Erro a dar connect: %s\n", strerror(errno));
-            exit(EXIT_FAILURE);
-        }
+        Connect(sockfd, serverinfo->ai_addr, serverinfo->ai_addrlen);
+        
 
         freeaddrinfo(serverinfo);
 
@@ -202,44 +164,123 @@ int main(int argc, char *argv[])
             printf("Type message to send: ");
             fgets(buf, sizeof(buf), stdin);
 
-            size_t n;
+            ssize_t n;
             size_t x = 0; /* Total bytes sent so far for this message */
 
             /* Quit command: send it like any other message, then close and exit */
-            if ((strcmp(buf, "!q\n")) == 0)
-            {
-                do
-                {
-                    n = send(sockfd, (buf + x), (strlen(buf) - x), 0);
-                    if (n < 0)
-                    {
-                        fprintf(stderr, "Erro sending: %s\n", strerror(errno));
-                        exit(EXIT_FAILURE);
-                    }
-                    x += n;
-                } while (x != strlen(buf));
-
-                printf("Connection Closed\n");
-                close(sockfd);
-                return 0;
-            }
+            check_for_close(buf, sockfd);
 
             /* send() isn't guaranteed to send everything in one call, so loop
              * until the whole message (x bytes) has actually gone out */
-            do
-            {
-                n = send(sockfd, (buf + x), (strlen(buf) - x), 0);
-                if (n < 0)
-                {
-                    fprintf(stderr, "Erro sending: %s\n", strerror(errno));
-                    exit(EXIT_FAILURE);
-                }
-                x += n;
-            } while (x != strlen(buf));
+            send_buffer(buf, sockfd);
 
             printf("Sent!\n");
         }
     }
 
     return 0;
+}
+int Getaddrinfo(const char *__restrict__ __name, const char *__restrict__ __service, 
+    const struct addrinfo *__restrict__ __req, struct addrinfo **__restrict__ __pai)
+{
+    int status;
+        
+    if((status = getaddrinfo(__name, __service, __req, __pai)) != 0)
+    {
+        fprintf(stderr, "Erro no getaddrinfo() : %s\n", gai_strerror(status));
+        exit(EXIT_FAILURE);
+    }
+
+}
+
+int Socket(int __domain, int __type, int __protocol)
+{
+    int n;
+    if ((n = socket(__domain, __type, __protocol)) == -1)
+    {
+        fprintf(stderr, "Erro a criar socket: %s\n", strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+    return n;
+}
+
+
+int Bind(int __fd, const struct sockaddr *__addr, socklen_t __len)
+{
+    
+    if(bind(__fd, __addr, __len) == -1)
+    {
+        fprintf(stderr, "Erro a dar bind: %s\n", strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+}
+
+int Listen(int __fd, int __n)
+{
+    if ((listen(__fd, __n)) == -1)
+    {
+        fprintf(stderr, "Erro a dar listen: %s\n", strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+}
+
+int Connect(int __fd, const struct sockaddr *__addr, socklen_t __len)
+{
+    if ((connect(__fd, __addr, __len)) == -1)
+    {
+    fprintf(stderr, "Erro a dar connect: %s\n", strerror(errno));
+    exit(EXIT_FAILURE);
+    }
+}
+
+int Accept(int __fd, struct sockaddr *__restrict__ __addr, socklen_t *__restrict__ __addr_len)
+{
+    int n;
+    if ((n = accept(__fd, __addr, __addr_len)) == -1)
+        {
+        fprintf(stderr, "Erro a dar accept: %s\n", strerror(errno));
+        exit(EXIT_FAILURE);
+        }
+        return n;
+}
+
+ssize_t Send(int __fd, const void *__buf, size_t __n, int __flags)
+{
+    int n;
+    if (n = send(__fd, __buf, __n, __flags))
+    {
+        fprintf(stderr, "Erro sending: %s\n", strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+
+}
+
+void check_for_close(char * buffer, int socket_fd)
+{
+    ssize_t n;
+    size_t x = 0;
+    if ((strcmp(buffer, "!q\n")) == 0)
+    {
+        do
+        {
+            n = Send(socket_fd, (buffer + x), (strlen(buffer) - x), 0);
+            x += n;
+        } while (x != strlen(buffer));
+        printf("Connection Closed\n");
+        close(socket_fd);
+        return 0;
+    }
+}
+
+void send_buffer(char *buffer, int socket_fd)
+{
+    ssize_t n;
+    size_t x = 0;
+    do
+    {
+        n = Send(socket_fd, (buffer + x), (strlen(buffer) - x), 0);
+        x += n;
+    } while (x != strlen(buffer));
+
+
 }
